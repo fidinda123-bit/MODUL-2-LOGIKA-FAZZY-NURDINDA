@@ -1,0 +1,119 @@
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+try:
+    import skfuzzy as fuzz
+    ADA_SKFUZZY = True
+except ImportError:
+    ADA_SKFUZZY = False
+# ---------- Fungsi keanggotaan (implementasi sendiri, setara skfuzzy) ----------
+def trimf(x, abc):
+    a, b, c = abc
+    y = np.zeros_like(x, dtype=float)
+    if b > a:
+        i = (x > a) & (x < b); y[i] = (x[i] - a) / (b - a)
+    if c > b:
+        i = (x > b) & (x < c); y[i] = (c - x[i]) / (c - b)
+    y[x == b] = 1.0
+    return y
+
+def trapmf(x, abcd):
+    a, b, c, d = abcd
+    y = np.zeros_like(x, dtype=float)
+    if b > a:
+        i = (x > a) & (x < b); y[i] = (x[i] - a) / (b - a)
+    i = (x >= b) & (x <= c); y[i] = 1.0
+    if d > c:
+        i = (x > c) & (x < d); y[i] = (d - x[i]) / (d - c)
+    return y
+
+# ---------- Defuzzifikasi manual (rumus sama dengan skfuzzy) ----------
+def defuzz_manual(x, mf, method):
+    if method == "centroid":
+        return np.sum(x * mf) / np.sum(mf)
+    if method == "bisector":
+        luas = np.cumsum(mf)
+        return x[np.argmax(luas >= luas[-1] / 2.0)]
+    mu_max = mf.max()
+    M = x[np.isclose(mf, mu_max)]
+    if method == "mom": return M.mean()
+    if method == "som": return M.min()
+    if method == "lom": return M.max()
+
+# ==========================================================
+# 1. SEMESTA & FUNGSI KEANGGOTAAN OUTPUT
+# ==========================================================
+z = np.linspace(0, 100, 1000)           # Kualitas sinyal 0-100
+mf_jelek  = trapmf(z, [0, 0, 25, 45])
+mf_sedang = trimf(z,  [35, 55, 75])
+mf_bagus  = trapmf(z, [65, 85, 100, 100])
+# ==========================================================
+# 2. FIRING STRENGTH, IMPLIKASI (MIN), AGREGASI (MAX)
+# ==========================================================
+alpha_jelek, alpha_sedang, alpha_bagus = 0.5, 0.8, 0.2
+imp_jelek  = np.fmin(alpha_jelek,  mf_jelek)
+imp_sedang = np.fmin(alpha_sedang, mf_sedang)
+imp_bagus  = np.fmin(alpha_bagus,  mf_bagus)
+agregasi   = np.fmax(imp_jelek, np.fmax(imp_sedang, imp_bagus))
+
+# ==========================================================
+# 3. DEFUZZIFIKASI 5 METODE
+# ==========================================================
+metode = ["centroid", "bisector", "mom", "som", "lom"]
+hasil = {}
+for m in metode:
+    if ADA_SKFUZZY:
+        hasil[m] = fuzz.defuzz(z, agregasi, m)
+    else:
+        hasil[m] = defuzz_manual(z, agregasi, m)
+
+# ==========================================================
+# 4. TABEL PERBANDINGAN
+# ==========================================================
+print("=" * 62)
+print("HASIL KOMPARASI METODE DEFUZZIFIKASI - KUALITAS SINYAL WIFI")
+print("(library: %s)" % ("scikit-fuzzy" if ADA_SKFUZZY else "implementasi numpy manual"))
+print("=" * 62)
+print(f"{'Metode':<12}{'Nilai Crisp':>14}{'mu(z*)':>12}")
+print("-" * 62)
+for m in metode:
+    idx = np.abs(z - hasil[m]).argmin()
+    print(f"{m.upper():<12}{hasil[m]:>14.3f}{agregasi[idx]:>12.3f}")
+print("=" * 62)
+
+# ==========================================================
+# 5. GRAFIK
+# ==========================================================
+warna = {"centroid": "red", "bisector": "purple", "mom": "black",
+         "som": "green", "lom": "orange"}
+
+fig, ax = plt.subplots(2, 1, figsize=(12, 11))
+
+# (a) MF output, klip, dan agregasi
+ax[0].plot(z, mf_jelek,  "r--", lw=1, label="Jelek")
+ax[0].plot(z, mf_sedang, "g--", lw=1, label="Sedang")
+ax[0].plot(z, mf_bagus,  "b--", lw=1, label="Bagus")
+ax[0].fill_between(z, 0, imp_jelek,  color="red",   alpha=0.3, label=f"Klip Jelek (a={alpha_jelek})")
+ax[0].fill_between(z, 0, imp_sedang, color="green", alpha=0.3, label=f"Klip Sedang (a={alpha_sedang})")
+ax[0].fill_between(z, 0, imp_bagus,  color="blue",  alpha=0.3, label=f"Klip Bagus (a={alpha_bagus})")
+ax[0].set_title("(a) Fungsi Keanggotaan Output dan Hasil Implikasi Min", fontweight="bold")
+ax[0].set_ylabel("Derajat Keanggotaan")
+ax[0].set_ylim(-0.05, 1.05); ax[0].grid(True, ls=":", alpha=0.6)
+ax[0].legend(loc="upper right", fontsize=9)
+
+# (b) Agregasi + 5 metode
+ax[1].plot(z, agregasi, "b", lw=2.5, label="Kurva Agregasi")
+ax[1].fill_between(z, 0, agregasi, color="skyblue", alpha=0.4)
+for m in metode:
+    v = hasil[m]
+    ax[1].axvline(v, color=warna[m], ls="--", lw=2, label=f"{m.upper()} ({v:.2f})")
+    ax[1].scatter([v], [agregasi[np.abs(z - v).argmin()]], color=warna[m], s=60, zorder=6)
+ax[1].set_title("(b) Perbandingan 5 Metode Defuzzifikasi - Kualitas Sinyal WiFi Kampus", fontweight="bold")
+ax[1].set_xlabel("Kualitas Sinyal (0-100)")
+ax[1].set_ylabel("Derajat Keanggotaan")
+ax[1].set_ylim(-0.05, 1.05); ax[1].grid(True, ls=":", alpha=0.6)
+ax[1].legend(loc="upper right", fontsize=9)
+plt.tight_layout()
+plt.savefig("Praktikum8_grafik.png", dpi=200)
+print("Grafik disimpan: Praktikum8_grafik.png")
