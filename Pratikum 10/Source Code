@@ -1,0 +1,231 @@
+"""
+Asesmen Modul 2 - Fuzzy Decision System
+Sistem Prioritas Tiket Helpdesk TI (Metode Mamdani, defuzzifikasi Centroid)
+Input 1 : Waktu Tunggu (0-24 jam) -> Cepat, Sedang, Lama
+Input 2 : Urgensi Masalah (0-10) -> Rendah, Sedang, Tinggi
+Output : Skor Prioritas (0-100) -> Ringan, Sedang, Tinggi, Kritis
+Implementasi murni NumPy (tanpa scikit-fuzzy).
+Penggunaan:
+python fuzzy_helpdesk.py # mode interaktif
+python fuzzy_helpdesk.py --waktu 9 --urgensi 8 # satu kasus
+python fuzzy_helpdesk.py --uji # skenario uji + semua grafik
+"""
+import argparse
+import numpy as np
+# ---------------------------------------------------------------
+# 1. FUNGSI KEANGGOTAAN
+# ---------------------------------------------------------------
+def trimf(x, a, b, c):
+"""Segitiga a-b-c."""
+x = np.asarray(x, dtype=float)
+kiri = (x - a) / (b - a) if b > a else (x >= b).astype(float)
+kanan = (c - x) / (c - b) if c > b else (x <= b).astype(float)
+return np.clip(np.minimum(kiri, kanan), 0.0, 1.0)
+def trapmf(x, a, b, c, d):
+"""Trapesium a-b-c-d (a=b / c=d menghasilkan bahu)."""
+x = np.asarray(x, dtype=float)
+kiri = (x - a) / (b - a) if b > a else (x >= b).astype(float)
+kanan = (d - x) / (d - c) if d > c else (x <= c).astype(float)
+return np.clip(np.minimum(np.minimum(kiri, 1.0), kanan), 0.0, 1.0)
+# ---------------------------------------------------------------
+# 2. DEFINISI VARIABEL (semesta & himpunan fuzzy)
+# ---------------------------------------------------------------
+U_WAKTU = (0, 24)
+U_URGENSI = (0, 10)
+U_PRIORITAS = (0, 100)
+# 'Lama' memakai fungsi Modul 1: naik linear 4 -> 12 jam
+MF_WAKTU = {
+"Cepat": lambda x: trapmf(x, 0, 0, 3, 8),
+"Sedang": lambda x: trimf(x, 3, 8, 13),
+"Lama": lambda x: trapmf(x, 4, 12, 24, 24),
+}
+MF_URGENSI = {
+"Rendah": lambda x: trapmf(x, 0, 0, 2, 5),
+"Sedang": lambda x: trimf(x, 2, 5, 8),
+"Tinggi": lambda x: trapmf(x, 5, 8, 10, 10),
+}
+MF_PRIORITAS = {
+"Ringan": lambda x: trapmf(x, 0, 0, 10, 30),
+"Sedang": lambda x: trimf(x, 15, 40, 65),
+"Tinggi": lambda x: trimf(x, 50, 70, 90),
+"Kritis": lambda x: trapmf(x, 75, 90, 100, 100),
+}
+# ---------------------------------------------------------------
+# 3. BASIS ATURAN (Waktu, Urgensi) -> Prioritas [matriks 3x3 = 9 aturan]
+# ---------------------------------------------------------------
+RULES = [
+("Cepat", "Rendah", "Ringan"), # R1
+("Cepat", "Sedang", "Ringan"), # R2
+("Cepat", "Tinggi", "Sedang"), # R3
+("Sedang", "Rendah", "Ringan"), # R4
+("Sedang", "Sedang", "Sedang"), # R5
+("Sedang", "Tinggi", "Tinggi"), # R6
+("Lama", "Rendah", "Sedang"), # R7
+("Lama", "Sedang", "Tinggi"), # R8
+("Lama", "Tinggi", "Kritis"), # R9
+]
+def cek_basis_aturan(rules=RULES):
+"""Memeriksa kelengkapan (9 kombinasi) dan konsistensi (tanpa konflik)."""
+antecedent = [(w, u) for w, u, _ in rules]
+lengkap = {(w, u) for w in MF_WAKTU for u in MF_URGENSI} == set(antecedent)
+konflik = len(antecedent) != len(set(antecedent))
+return {"jumlah_aturan": len(rules), "lengkap": lengkap, "bebas_konflik": not konflik}
+# ---------------------------------------------------------------
+# 4. MESIN INFERENSI MAMDANI
+# ---------------------------------------------------------------
+Y = np.linspace(*U_PRIORITAS, 1001) # semesta output terdiskritisasi
+def fuzzifikasi(waktu, urgensi):
+mu_w = {k: float(f(waktu)) for k, f in MF_WAKTU.items()}
+mu_u = {k: float(f(urgensi)) for k, f in MF_URGENSI.items()}
+return mu_w, mu_u
+def inferensi(waktu, urgensi):
+"""Mengembalikan kekuatan firing tiap aturan & kurva agregasi."""
+mu_w, mu_u = fuzzifikasi(waktu, urgensi)
+firing, agregasi = [], np.zeros_like(Y)
+for w, u, out in RULES:
+alpha = min(mu_w[w], mu_u[u]) # operator AND = MIN
+firing.append(alpha)
+terpotong = np.minimum(alpha, MF_PRIORITAS[out](Y)) # implikasi MIN (clipping)
+agregasi = np.maximum(agregasi, terpotong) # agregasi MAX
+return firing, agregasi
+# ---------------------------------------------------------------
+# 5. DEFUZZIFIKASI
+# ---------------------------------------------------------------
+def defuzzifikasi(agregasi, metode="centroid"):
+if agregasi.sum() == 0:
+return 0.0
+if metode == "centroid":
+return float(np.sum(Y * agregasi) / np.sum(agregasi))
+if metode == "mom": # Mean of Maximum
+return float(Y[agregasi == agregasi.max()].mean())
+raise ValueError("metode harus 'centroid' atau 'mom'")
+def evaluasi_sistem_fuzzy(waktu, urgensi, metode="centroid"):
+waktu = float(np.clip(waktu, *U_WAKTU))
+urgensi = float(np.clip(urgensi, *U_URGENSI))
+_, agregasi = inferensi(waktu, urgensi)
+return defuzzifikasi(agregasi, metode)
+def label_prioritas(skor):
+"""Label linguistik = himpunan output dengan derajat tertinggi."""
+mu = {k: float(f(skor)) for k, f in MF_PRIORITAS.items()}
+return max(mu, key=mu.get)
+def crisp_modul1(waktu):
+"""Pembanding: aturan crisp Modul 1 (kritis bila waktu >= 8 jam)."""
+return 1 if waktu >= 8 else 0
+# ---------------------------------------------------------------
+# 6. SKENARIO PENGUJIAN
+# ---------------------------------------------------------------
+SKENARIO = [
+("S1", "Tiket baru, masalah sepele", 1.0, 1.0),
+("S2", "Tiket baru, masalah sangat mendesak", 1.0, 9.5),
+("S3", "Menunggu lama, masalah sepele", 22.0, 1.0),
+("S4", "Menunggu lama, masalah sangat mendesak", 22.0, 9.5),
+("S5", "Kondisi menengah", 8.0, 5.0),
+("S6", "Tepat di bawah batas crisp 8 jam", 7.9, 8.0),
+("S7", "Tepat di atas batas crisp 8 jam", 8.1, 8.0),
+("S8", "Cukup lama, urgensi tinggi", 10.0, 8.0),
+]
+def jalankan_uji():
+print(f"{'ID':<4}{'Waktu':>7}{'Urgensi':>9}{'Skor':>9}{'MOM':>8}"
+f" {'Label':<8}{'Crisp-M1':>9}")
+print("-" * 58)
+hasil = []
+for sid, ket, w, u in SKENARIO:
+s = evaluasi_sistem_fuzzy(w, u)
+m = evaluasi_sistem_fuzzy(w, u, "mom")
+hasil.append((sid, ket, w, u, s, m, label_prioritas(s), crisp_modul1(w)))
+print(f"{sid:<4}{w:>7.1f}{u:>9.1f}{s:>9.2f}{m:>8.1f}"
+f" {label_prioritas(s):<8}{crisp_modul1(w):>9}")
+return hasil
+# ---------------------------------------------------------------
+# 7. VISUALISASI
+# ---------------------------------------------------------------
+def plot_fungsi_keanggotaan(path="fungsi_keanggotaan.png"):
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+data = [("Waktu Tunggu (jam)", U_WAKTU, MF_WAKTU),
+("Urgensi Masalah (0-10)", U_URGENSI, MF_URGENSI),
+("Skor Prioritas (0-100)", U_PRIORITAS, MF_PRIORITAS)]
+for a, (judul, (lo, hi), mfs) in zip(ax, data):
+x = np.linspace(lo, hi, 600)
+for nama, f in mfs.items():
+a.plot(x, f(x), lw=2, label=nama)
+a.set(title=judul, xlabel="x", ylabel="μ(x)", ylim=(-0.03, 1.05))
+a.grid(ls=":", alpha=.6); a.legend()
+fig.suptitle("Fungsi Keanggotaan Sistem Prioritas Tiket Helpdesk TI", fontweight="bold")
+fig.tight_layout(); fig.savefig(path, dpi=300); plt.close(fig)
+def plot_agregasi(waktu, urgensi, path="kurva_agregasi.png"):
+import matplotlib.pyplot as plt
+firing, agr = inferensi(waktu, urgensi)
+skor = defuzzifikasi(agr)
+fig, ax = plt.subplots(figsize=(9, 5))
+for nama, f in MF_PRIORITAS.items():
+ax.plot(Y, f(Y), "--", lw=1, alpha=.6, label=nama)
+ax.fill_between(Y, agr, color="tab:orange", alpha=.5, label="Agregasi (MAX)")
+ax.axvline(skor, color="red", lw=2, label=f"Centroid = {skor:.2f}")
+ax.set(title=f"Kurva Agregasi Mamdani (Waktu={waktu} jam, Urgensi={urgensi})",
+xlabel="Skor Prioritas", ylabel="μ", ylim=(0, 1.05))
+ax.grid(ls=":", alpha=.6); ax.legend()
+fig.tight_layout(); fig.savefig(path, dpi=300); plt.close(fig)
+def plot_decision_surface(path="decision_surface.png", n=30):
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D # noqa: F401
+x1 = np.linspace(*U_WAKTU, n)
+x2 = np.linspace(*U_URGENSI, n)
+X1, X2 = np.meshgrid(x1, x2)
+Z = np.zeros_like(X1)
+for i in range(X1.shape[0]):
+for j in range(X1.shape[1]):
+Z[i, j] = evaluasi_sistem_fuzzy(X1[i, j], X2[i, j])
+fig = plt.figure(figsize=(10, 7))
+ax = fig.add_subplot(111, projection="3d")
+surf = ax.plot_surface(X1, X2, Z, cmap="viridis", edgecolor="none", alpha=.9)
+ax.set_xlabel("Waktu Tunggu (jam)"); ax.set_ylabel("Urgensi Masalah (0-10)")
+ax.set_zlabel("Skor Prioritas"); ax.view_init(elev=25, azim=-130)
+ax.set_title("Decision Surface Plot Sistem Prioritas Tiket Helpdesk TI", fontweight="bold")
+fig.colorbar(surf, shrink=.5, aspect=5)
+fig.savefig(path, dpi=300); plt.close(fig)
+def plot_perbandingan_crisp(path="perbandingan_crisp_vs_fuzzy.png"):
+"""Respon sistem terhadap waktu pada urgensi tetap vs crisp Modul 1."""
+import matplotlib.pyplot as plt
+t = np.linspace(0, 24, 200)
+fig, ax = plt.subplots(figsize=(9, 5))
+for u in (2, 5, 8):
+skor = [evaluasi_sistem_fuzzy(w, u) for w in t]
+ax.plot(t, skor, lw=2, label=f"Fuzzy Mamdani, urgensi={u}")
+ax.step(t, [crisp_modul1(w) * 100 for w in t], "k--", where="post",
+label="Crisp Modul 1 (x100)")
+ax.set(title="Respon Skor Prioritas terhadap Waktu Tunggu",
+xlabel="Waktu Tunggu (jam)", ylabel="Skor Prioritas")
+ax.grid(ls=":", alpha=.6); ax.legend()
+fig.tight_layout(); fig.savefig(path, dpi=300); plt.close(fig)
+# ---------------------------------------------------------------
+# 8. PROGRAM UTAMA
+# ---------------------------------------------------------------
+def main():
+p = argparse.ArgumentParser(description="Fuzzy Mamdani - Prioritas Tiket Helpdesk TI")
+p.add_argument("--waktu", type=float, help="waktu tunggu 0-24 jam")
+p.add_argument("--urgensi", type=float, help="urgensi 0-10")
+p.add_argument("--uji", action="store_true", help="jalankan skenario uji + buat grafik")
+a = p.parse_args()
+print("Cek basis aturan:", cek_basis_aturan())
+if a.uji:
+jalankan_uji()
+plot_fungsi_keanggotaan(); plot_agregasi(9, 8)
+plot_decision_surface(); plot_perbandingan_crisp()
+print("Grafik tersimpan.")
+return
+w = a.waktu if a.waktu is not None else float(input("Waktu tunggu tiket (0-24 jam): "))
+u = a.urgensi if a.urgensi is not None else float(input("Urgensi masalah (0-10): "))
+mu_w, mu_u = fuzzifikasi(w, u)
+firing, _ = inferensi(w, u)
+print("\nFuzzifikasi waktu :", {k: round(v, 3) for k, v in mu_w.items()})
+print("Fuzzifikasi urgensi:", {k: round(v, 3) for k, v in mu_u.items()})
+for i, (r, al) in enumerate(zip(RULES, firing), 1):
+if al > 0:
+print(f" R{i}: IF Waktu={r[0]} AND Urgensi={r[1]} THEN {r[2]} (α={al:.3f})")
+skor = evaluasi_sistem_fuzzy(w, u)
+print(f"\nSkor Prioritas (centroid): {skor:.2f} -> {label_prioritas(skor)}")
+if __name__ == "__main__":
+main()
+Langkah 4: Pembuatan Visualisasi Permukaan Keputusan (Decision Surface Plot)
+Decision surface menggambarkan korelasi antara Input 1 (Waktu Tunggu, sumbu X), Input 2 (Urgensi Masalah, sumbu Y), dan Output Keputusan (Skor Prioritas, sumbu Z). Grid 30 × 30 titik dievaluasi memakai fungsi evaluasi_sistem_fuzzy().
