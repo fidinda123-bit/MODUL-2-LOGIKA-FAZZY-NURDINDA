@@ -1,0 +1,181 @@
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+# -----------------------------------------------------------------------------
+# 1. FUNGSI KEANGGOTAAN
+# -----------------------------------------------------------------------------
+def trimf(x, params):
+"""Segitiga [a, b, c]."""
+a, b, c = params
+x = np.asarray(x, dtype=float)
+y = np.zeros_like(x)
+i1 = (x > a) & (x <= b)
+if b != a:
+y[i1] = (x[i1] - a) / (b - a)
+i2 = (x > b) & (x < c)
+if c != b:
+y[i2] = (c - x[i2]) / (c - b)
+y[x == b] = 1.0
+return np.clip(y, 0.0, 1.0)
+def trapmf(x, params):
+"""Trapesium [a, b, c, d]; mendukung bahu (a==b atau c==d)."""
+a, b, c, d = params
+x = np.asarray(x, dtype=float)
+y = np.zeros_like(x)
+if b != a:
+m = (x > a) & (x < b)
+y[m] = (x[m] - a) / (b - a)
+y[(x >= b) & (x <= c)] = 1.0
+if d != c:
+m = (x > c) & (x < d)
+y[m] = (d - x[m]) / (d - c)
+return np.clip(y, 0.0, 1.0)
+# -----------------------------------------------------------------------------
+# 2. KELAS FUZZY INFERENCE SYSTEM
+# -----------------------------------------------------------------------------
+class FuzzyInferenceSystem:
+"""FIS Mamdani: Fuzzifikasi -> Evaluasi Aturan -> Implikasi ->
+Agregasi (Max) -> Defuzzifikasi (Centroid)."""
+def __init__(self, implication="min", fallback=None):
+self.inputs = {} # nama -> (universe, {himpunan: fungsi})
+self.output = None # (nama, universe, {himpunan: fungsi})
+self.rules = [] # (antecedent dict, operator, himpunan output)
+self.implication = implication # 'min' (clipping) / 'prod' (scaling)
+self.fallback = fallback # nilai crisp bila semua alpha = 0
+self.last = {} # hasil proses terakhir (untuk plot)
+# ---- konfigurasi -------------------------------------------------------
+def add_input_variable(self, name, universe, mf_dict):
+self.inputs[name] = (np.asarray(universe, dtype=float), mf_dict)
+def set_output_variable(self, name, universe, mf_dict):
+self.output = (name, np.asarray(universe, dtype=float), mf_dict)
+def add_rule(self, rule_tuple):
+"""rule_tuple = ({'Lama': 'Lama', 'Frekuensi': 'Jarang'}, 'AND', 'Sedang')"""
+antecedent, op, consequent = rule_tuple
+if op.upper() not in ("AND", "OR"):
+raise ValueError("Operator harus 'AND' atau 'OR'")
+self.rules.append((antecedent, op.upper(), consequent))
+# ---- tahapan inferensi -------------------------------------------------
+def fuzzify(self, input_values):
+derajat = {}
+for var, (_, mfs) in self.inputs.items():
+x = float(input_values[var])
+derajat[var] = {s: float(f(np.array([x]))[0]) for s, f in mfs.items()}
+return derajat
+def evaluate_rules(self, derajat):
+alphas = []
+for antecedent, op, _ in self.rules:
+mus = [derajat[v][s] for v, s in antecedent.items()]
+alphas.append(min(mus) if op == "AND" else max(mus))
+return alphas
+def aggregate(self, alphas):
+_, z, mfs = self.output
+agg = np.zeros_like(z)
+implied = []
+for alpha, (_, _, cons) in zip(alphas, self.rules):
+mu = mfs[cons](z)
+imp = np.minimum(alpha, mu) if self.implication == "min" else alpha * mu
+implied.append(imp)
+agg = np.maximum(agg, imp)
+return agg, implied
+def defuzzify(self, agg):
+_, z, _ = self.output
+total = np.sum(agg)
+if total == 0: # fallback mechanism (hindari pembagian 0/0)
+return self.fallback if self.fallback is not None \
+else float((z[0] + z[-1]) / 2)
+return float(np.sum(z * agg) / total)
+def compute(self, input_values):
+"""Mengembalikan nilai crisp output."""
+derajat = self.fuzzify(input_values)
+alphas = self.evaluate_rules(derajat)
+agg, implied = self.aggregate(alphas)
+crisp = self.defuzzify(agg)
+self.last = dict(inputs=input_values, derajat=derajat, alphas=alphas,
+implied=implied, agg=agg, crisp=crisp)
+return crisp
+# -----------------------------------------------------------------------------
+# 3. KONFIGURASI SISTEM REKOMENDASI DISKON LAYANAN TI
+# -----------------------------------------------------------------------------
+def build_fis(implication="min"):
+fis = FuzzyInferenceSystem(implication=implication)
+# Input 1: Lama Langganan (bulan), semesta 0-36
+fis.add_input_variable("Lama", np.linspace(0, 36, 361), {
+"Baru": lambda x: trapmf(x, [0, 0, 0, 12]),
+"Lama": lambda x: trapmf(x, [6, 18, 36, 36]),
+})
+# Input 2: Frekuensi Transaksi (kali/bulan), semesta 0-20
+fis.add_input_variable("Frekuensi", np.linspace(0, 20, 201), {
+"Jarang": lambda x: trapmf(x, [0, 0, 0, 10]),
+"Sering": lambda x: trapmf(x, [4, 9, 20, 20]),
+})
+# Output: Besaran Diskon (%), semesta 0-30
+fis.set_output_variable("Diskon", np.linspace(0, 30, 300), {
+"Kecil": lambda x: trimf(x, [0, 5, 12]),
+"Sedang": lambda x: trimf(x, [8, 15, 22]),
+"Besar": lambda x: trimf(x, [18, 25, 30]),
+})
+# Basis aturan
+fis.add_rule(({"Lama": "Baru", "Frekuensi": "Jarang"}, "AND", "Kecil"))
+fis.add_rule(({"Lama": "Baru", "Frekuensi": "Sering"}, "AND", "Sedang"))
+fis.add_rule(({"Lama": "Lama", "Frekuensi": "Jarang"}, "AND", "Sedang"))
+fis.add_rule(({"Lama": "Lama", "Frekuensi": "Sering"}, "AND", "Besar"))
+return fis
+# -----------------------------------------------------------------------------
+# PROGRAM UTAMA
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+fis = build_fis("min")
+# ---- 4. Verifikasi contoh pada modul (Lama=15, Frekuensi=8) -------------
+print("=" * 66)
+print("VERIFIKASI CONTOH MODUL: Lama = 15 bulan, Frekuensi = 8 kali")
+print("=" * 66)
+hasil = fis.compute({"Lama": 15, "Frekuensi": 8})
+d = fis.last["derajat"]
+print(f"Fuzzifikasi : Baru={d['Lama']['Baru']:.2f}, Lama={d['Lama']['Lama']:.2f}, "
+f"Jarang={d['Frekuensi']['Jarang']:.2f}, Sering={d['Frekuensi']['Sering']:.2f}")
+print(f"alpha Rule 3 (Lama & Jarang -> Sedang) = {fis.last['alphas'][2]:.2f}")
+print(f"alpha Rule 4 (Lama & Sering -> Besar) = {fis.last['alphas'][3]:.2f}")
+print(f"Diskon (Centroid) = {hasil:.2f}%\n")
+# ---- 5. TUGAS: 3 kasus uji ---------------------------------------------
+kasus = [
+("Kasus 1", {"Lama": 3, "Frekuensi": 2}),
+("Kasus 2", {"Lama": 12, "Frekuensi": 6}),
+("Kasus 3", {"Lama": 24, "Frekuensi": 15}),
+]
+_, z, mfs = fis.output
+print("=" * 66)
+print("HASIL PENGUJIAN 3 KASUS")
+print("=" * 66)
+print(f"{'Kasus':<9}{'Lama':>6}{'Frek':>6} {'alpha R1, R2, R3, R4':<26}{'Diskon (%)':>10}")
+print("-" * 66)
+fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+for ax, (nama, inp) in zip(axes, kasus):
+out = fis.compute(inp)
+r = fis.last
+al = ", ".join(f"{a:.2f}" for a in r["alphas"])
+print(f"{nama:<9}{inp['Lama']:>6}{inp['Frekuensi']:>6} {al:<26}{out:>10.2f}")
+for n, c in zip(["Kecil", "Sedang", "Besar"], ["g", "b", "r"]):
+ax.plot(z, mfs[n](z), c + "--", alpha=0.5, label=f"MF {n}")
+ax.fill_between(z, 0, r["agg"], color="purple", alpha=0.35, label="Daerah Agregasi")
+ax.plot(z, r["agg"], color="purple", linewidth=2.5)
+ax.axvline(out, color="black", linewidth=2.5, label=f"Centroid = {out:.2f}%")
+ax.scatter([out], [0], color="black", s=70, zorder=6)
+ax.set_title(f"{nama}: Lama={inp['Lama']} bln, Frek={inp['Frekuensi']}x",
+fontsize=11, fontweight="bold")
+ax.set_xlabel("Besaran Diskon (%)")
+ax.set_ylim(-0.05, 1.05)
+ax.grid(True, linestyle=":", alpha=0.6)
+ax.legend(loc="upper left", fontsize=8)
+axes[0].set_ylabel("Derajat Keanggotaan μ(z)")
+fig.suptitle("Arsitektur FIS: Implikasi, Agregasi, dan Defuzzifikasi Centroid",
+fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.savefig("pipeline_fis_agregasi_defuzzifikasi.png", dpi=200)
+print("\nGrafik tersimpan: pipeline_fis_agregasi_defuzzifikasi.png")
+# ---- Pendukung analisis ------------------------------------------------
+fis_p = build_fis("prod")
+print("\nPerbandingan implikasi Min vs Product:")
+for nama, inp in kasus:
+print(f" {nama}: Min = {fis.compute(inp):.2f}% | Product = {fis_p.compute(inp):.2f}%")
+print("\nUji fallback (semua alpha = 0, input di luar semesta):")
+print(f" Output = {fis.compute({'Lama': -5, 'Frekuensi': -5}):.2f}% (titik tengah semesta)")
