@@ -1,0 +1,97 @@
+"""
+Praktikum 9 - Metode Sugeno dan Tsukamoto
+Kasus: Sistem Pengaturan Alokasi Bandwidth Dinamis
+Input 1 : Jumlah Pengguna Aktif   (0 - 100 user)
+Input 2 : Tingkat Trafik Saat Ini (0 - 100)
+Output  : Alokasi Bandwidth       (10 - 100 Mbps)
+Simpan sebagai Modul-2/Praktikum9_<NIM>.py (ganti NIM dengan NIM Anda).
+"""
+import numpy as np
+# ==========================================================
+# 1. FUNGSI KEANGGOTAAN INPUT (bahu linear, saling komplementer)
+# ==========================================================
+def turun(x, a, b):
+    """1 untuk x<=a, turun linear ke 0 di x=b."""
+    return float(np.clip((b - x) / (b - a), 0.0, 1.0))
+def naik(x, a, b):
+    """0 untuk x<=a, naik linear ke 1 di x=b."""
+    return float(np.clip((x - a) / (b - a), 0.0, 1.0))
+def fuzzifikasi(users, trafik):
+    return {
+        "user":   {"Sedikit": turun(users, 20, 80), "Banyak": naik(users, 20, 80)},
+        "trafik": {"Rendah":  turun(trafik, 20, 80), "Tinggi": naik(trafik, 20, 80)},
+    }
+# ==========================================================
+# 2. BASIS ATURAN (4 aturan, operator AND = min)
+# ==========================================================
+# R1: IF User Sedikit AND Trafik Rendah THEN Bandwidth Kecil
+# R2: IF User Sedikit AND Trafik Tinggi THEN Bandwidth Sedang
+# R3: IF User Banyak  AND Trafik Rendah THEN Bandwidth Sedang
+# R4: IF User Banyak  AND Trafik Tinggi THEN Bandwidth Besar
+ATURAN = [("Sedikit", "Rendah"), ("Sedikit", "Tinggi"),
+          ("Banyak", "Rendah"), ("Banyak", "Tinggi")]
+def firing_strength(fz):
+    return [min(fz["user"][u], fz["trafik"][t]) for u, t in ATURAN]
+# ==========================================================
+# 3. SUGENO ORDE 0  (konsekuen = konstanta, Mbps)
+# ==========================================================
+Z_SUGENO = [20.0, 50.0, 60.0, 90.0]   # Kecil, Sedang, Sedang, Besar
+def hitung_sugeno(alphas, z_values):
+    alphas, z_values = np.array(alphas), np.array(z_values)
+    total = alphas.sum()
+    return 0.0 if total == 0 else float((alphas * z_values).sum() / total)
+# ==========================================================
+# 4. TSUKAMOTO  (konsekuen = himpunan fuzzy monoton)
+# ==========================================================
+# Kecil  : monoton TURUN pada [10, 60]  -> z = 60 - a(60-10)
+# Sedang : monoton NAIK  pada [30, 80]  -> z = 30 + a(80-30)
+# Besar  : monoton NAIK  pada [10, 100] -> z = 10 + a(100-10)
+def invers_naik(alpha, a, b):
+    return a + alpha * (b - a)
+def invers_turun(alpha, a, b):
+    return b - alpha * (b - a)
+INVERS = [
+    lambda a: invers_turun(a, 10, 60),    # R1 Kecil
+    lambda a: invers_naik(a, 30, 80),     # R2 Sedang
+    lambda a: invers_naik(a, 30, 80),     # R3 Sedang
+    lambda a: invers_naik(a, 10, 100),    # R4 Besar
+]
+def hitung_tsukamoto(alphas, fungsi_invers):
+    z_values = [f(a) for a, f in zip(alphas, fungsi_invers)]
+    return hitung_sugeno(alphas, z_values), z_values
+# ==========================================================
+# 5. PENGUJIAN: 5 VARIASI BEBAN JARINGAN
+# ==========================================================
+DATA_UJI = [
+    ("Jaringan sepi",          10, 15),
+    ("Kantor jam normal",      35, 40),
+    ("User banyak, trafik rdh", 85, 25),
+    ("User sedikit, trafik pdt", 20, 90),
+    ("Jam sibuk / puncak",     90, 85),
+]
+if __name__ == "__main__":
+    print("=" * 100)
+    print("DETAIL FIRING STRENGTH DAN OUTPUT PER ATURAN")
+    print("=" * 100)
+    hasil = []
+    for nama, u, t in DATA_UJI:
+        fz = fuzzifikasi(u, t)
+        al = firing_strength(fz)
+        s = hitung_sugeno(al, Z_SUGENO)
+        ts, zt = hitung_tsukamoto(al, INVERS)
+        hasil.append((nama, u, t, al, s, ts))
+        print(f"{nama:<26} user={u:>3} trafik={t:>3} | "
+              f"alpha={[round(a, 3) for a in al]} | z_tsukamoto={[round(z, 2) for z in zt]}")
+    print("\n" + "=" * 100)
+    print("TABEL PERBANDINGAN ALOKASI BANDWIDTH (Mbps)")
+    print("=" * 100)
+    print(f"{'No':<3}{'Skenario':<26}{'User':>5}{'Trafik':>8}{'Sugeno-0':>11}{'Tsukamoto':>11}{'Selisih':>9}{'Selisih %':>11}")
+    print("-" * 100)
+    selisih_all = []
+    for i, (nama, u, t, al, s, ts) in enumerate(hasil, 1):
+        d = abs(s - ts)
+        selisih_all.append(d)
+  print(f"{i:<3}{nama:<26}{u:>5}{t:>8}{s:>11.2f}{ts:>11.2f}{d:>9.2f}{d / s * 100:>10.1f}%")
+    print("-" * 100)
+    print(f"Rata-rata selisih mutlak : {np.mean(selisih_all):.2f} Mbps")
+    print(f"Selisih maksimum         : {np.max(selisih_all):.2f} Mbps")
